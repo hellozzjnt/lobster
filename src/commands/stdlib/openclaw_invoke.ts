@@ -24,6 +24,14 @@ function createInvokeCommand(commandName: string) {
             description: "Key to set from the pipeline item (default: item)",
           },
           "item-key": { type: "string", description: "Alias for itemKey" },
+          "input-max-length": {
+            type: "number",
+            description:
+              "Max length (chars) when auto-injecting stdin into args.input. " +
+              "Stdin items beyond this are truncated and a one-line warning is " +
+              "written to stderr. Default: 8000. Set 0 to disable truncation.",
+          },
+          "input-max": { type: "number", description: "Alias for input-max-length" },
           _: { type: "array", items: { type: "string" } },
         },
         required: ["tool", "action"],
@@ -142,7 +150,28 @@ function createInvokeCommand(commandName: string) {
           if (toolArgs == null || typeof toolArgs !== "object" || Array.isArray(toolArgs)) {
             toolArgs = {};
           }
-          toolArgs.input = drained.length === 1 ? drained[0] : drained;
+          // Truncate when upstream stdout is very long — downstream skills
+          // often have schema caps (e.g. baoyu-cover-image: topic ≤ 2000).
+          // Default 8000 chars; --input-max-length 0 disables truncation.
+          const maxLenRaw = args["input-max-length"] ?? args["input-max"];
+          const maxLen =
+            maxLenRaw === undefined ? 8000 : Math.max(0, Math.floor(Number(maxLenRaw) || 0));
+          const singleItem = drained.length === 1;
+          let injected: unknown = singleItem ? drained[0] : drained;
+          if (maxLen > 0) {
+            const asText =
+              typeof injected === "string"
+                ? injected
+                : JSON.stringify(injected);
+            if (typeof asText === "string" && asText.length > maxLen) {
+              const truncated = asText.slice(0, maxLen) + "…[truncated]";
+              process.stderr.write(
+                `[${commandName}] stdin → args.input truncated from ${asText.length} to ${maxLen} chars\n`,
+              );
+              injected = truncated;
+            }
+          }
+          toolArgs.input = injected;
         }
         const items = await invokeOnce(toolArgs);
         return { output: asStream(items) };
