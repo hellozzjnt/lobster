@@ -122,9 +122,27 @@ function createInvokeCommand(commandName: string) {
       };
 
       if (!each) {
-        // Drain input: for now we don't stream input into clawd calls.
-        for await (const _item of input) {
-          // no-op
+        // Drain stdin and auto-inject into args.input when the caller hasn't
+        // explicitly set it. This makes `stdin: $prev.stdout` chain naturally
+        // into the skill's input field — without it, OpenClaw's skill invoke
+        // protocol (raw_input = args.input) silently loses upstream output.
+        // Callers that want to pass explicit args without stdin still work:
+        // empty stdin → drained.length === 0 → no injection.
+        const drained: any[] = [];
+        for await (const item of input) {
+          drained.push(item);
+        }
+        const hasExplicitInput =
+          toolArgs != null &&
+          typeof toolArgs === "object" &&
+          "input" in toolArgs &&
+          toolArgs.input != null &&
+          toolArgs.input !== "";
+        if (drained.length > 0 && !hasExplicitInput) {
+          if (toolArgs == null || typeof toolArgs !== "object" || Array.isArray(toolArgs)) {
+            toolArgs = {};
+          }
+          toolArgs.input = drained.length === 1 ? drained[0] : drained;
         }
         const items = await invokeOnce(toolArgs);
         return { output: asStream(items) };
