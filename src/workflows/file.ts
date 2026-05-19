@@ -1276,7 +1276,7 @@ export async function runWorkflowFile({
       }
 
       if (isApprovalStep(step.approval)) {
-        const approval = extractApprovalRequest(step, results[step.id], ctx.env);
+        const approval = extractApprovalRequest(step, results[step.id], ctx.env, resolvedArgs, results);
         const approvalIdentity = approvalIdentityFromRequest(approval);
         if (approvalIdentity.initiatedBy) {
           results[step.id].initiatedBy = approvalIdentity.initiatedBy;
@@ -1882,7 +1882,16 @@ function extractApprovalRequest(
   step: WorkflowStep,
   result: WorkflowStepResult,
   env?: Record<string, string | undefined>,
+  args?: Record<string, unknown>,
+  results?: Record<string, WorkflowStepResult>,
 ) {
+  // 让 approval.prompt / approval.preview 走 resolveTemplate，支持 ${arg}
+  // 和 $stepId.path 引用 — 否则审批人看到字面占位符没法验内容。
+  const resolveIfPossible = (value: string | undefined): string | undefined => {
+    if (typeof value !== "string" || value.length === 0) return value;
+    if (!args || !results) return value;
+    return resolveTemplate(value, args, results);
+  };
   const approvalConfig = normalizeApprovalConfig(step.approval);
   const configIdentity = approvalIdentityFromRaw(approvalConfig);
   if (!configIdentity.initiatedBy) {
@@ -1897,7 +1906,7 @@ function extractApprovalRequest(
     const fromEnv = parseBoolLike(env?.LOBSTER_APPROVAL_REQUIRE_DIFFERENT_APPROVER);
     if (fromEnv === true) configIdentity.requireDifferentApprover = true;
   }
-  const fallbackPrompt = approvalConfig.prompt ?? `Approve ${step.id}?`;
+  const fallbackPrompt = resolveIfPossible(approvalConfig.prompt) ?? `Approve ${step.id}?`;
   const json = result.json;
 
   if (json && typeof json === "object" && !Array.isArray(json)) {
@@ -1930,10 +1939,10 @@ function extractApprovalRequest(
       };
       return {
         type: "approval_request" as const,
-        prompt: candidate.requiresApproval.prompt,
+        prompt: resolveIfPossible(candidate.requiresApproval.prompt) ?? candidate.requiresApproval.prompt,
         items: candidate.requiresApproval.items ?? [],
         ...(candidate.requiresApproval.preview
-          ? { preview: candidate.requiresApproval.preview }
+          ? { preview: resolveIfPossible(candidate.requiresApproval.preview) ?? candidate.requiresApproval.preview }
           : null),
         ...(identity.initiatedBy ? { initiatedBy: identity.initiatedBy } : null),
         ...(identity.requiredApprover ? { requiredApprover: identity.requiredApprover } : null),
@@ -1947,9 +1956,9 @@ function extractApprovalRequest(
       };
       return {
         type: "approval_request" as const,
-        prompt: candidate.prompt,
+        prompt: resolveIfPossible(candidate.prompt) ?? candidate.prompt,
         items: candidate.items ?? [],
-        ...(candidate.preview ? { preview: candidate.preview } : null),
+        ...(candidate.preview ? { preview: resolveIfPossible(candidate.preview) ?? candidate.preview } : null),
         ...(identity.initiatedBy ? { initiatedBy: identity.initiatedBy } : null),
         ...(identity.requiredApprover ? { requiredApprover: identity.requiredApprover } : null),
         ...(identity.requireDifferentApprover ? { requireDifferentApprover: true } : null),
@@ -1958,7 +1967,8 @@ function extractApprovalRequest(
   }
 
   const items = approvalConfig.items ?? normalizeApprovalItems(result.json);
-  const preview = approvalConfig.preview ?? buildResultPreview(result);
+  const rawPreview = approvalConfig.preview ?? buildResultPreview(result);
+  const preview = resolveIfPossible(rawPreview) ?? rawPreview;
 
   return {
     type: "approval_request" as const,
